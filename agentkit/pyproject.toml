@@ -1,0 +1,61 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agentkit"
+version = "0.1.0"
+description = "A small, readable, provider-agnostic framework for building any kind of AI agent."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+keywords = ["llm", "agents", "rag", "langchain", "langgraph", "ai"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+# NO REQUIRED DEPENDENCIES. This is a deliberate constraint, not an oversight:
+# the graph engine, the composition layer and the RAG pipeline all run on the
+# standard library alone, so the package can be read, audited and vendored
+# without dragging in a transitive tree. Provider SDKs are imported lazily,
+# inside the constructor of the class that needs them.
+dependencies = []
+
+[project.optional-dependencies]
+anthropic = ["anthropic>=0.40"]
+openai = ["openai>=1.40"]
+all = ["anthropic>=0.40", "openai>=1.40"]
+dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.11"]
+
+[project.urls]
+Homepage = "https://github.com/your-org/agentkit"
+Issues = "https://github.com/your-org/agentkit/issues"
+
+[tool.setuptools.packages.find]
+include = ["agentkit*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = [
+    "E501",   # long lines are usually long comments here, which is the point
+    "B008",
+]
+
+[tool.mypy]
+python_version = "3.10"
+ignore_missing_imports = true
+warn_unused_ignores = false
