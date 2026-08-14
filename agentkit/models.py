@@ -344,6 +344,147 @@ class OpenAIModel(BaseChatModel):
 
 
 # ---------------------------------------------------------------------------
+# LiteLLM — unified interface to 100+ providers
+# ---------------------------------------------------------------------------
+class LiteLLMModel(BaseChatModel):
+    """Adapter for LiteLLM, providing access to 100+ LLM providers.
+
+    LiteLLM gives you a unified interface to OpenAI, Anthropic, Azure, Bedrock,
+    Cohere, Replicate, HuggingFace, Ollama, and many more. Just change the model
+    name and optionally set the corresponding API key.
+
+    Examples:
+        # OpenAI
+        LiteLLMModel("gpt-4o-mini")  # needs OPENAI_API_KEY
+
+        # Anthropic
+        LiteLLMModel("claude-sonnet-4-5")  # needs ANTHROPIC_API_KEY
+
+        # Azure OpenAI
+        LiteLLMModel("azure/gpt-4")  # needs AZURE_API_KEY, AZURE_API_BASE
+
+        # Local Ollama
+        LiteLLMModel("ollama/llama3")  # no key needed
+
+        # AWS Bedrock
+        LiteLLMModel("bedrock/anthropic.claude-3-sonnet")  # AWS credentials
+
+    See: https://docs.litellm.ai/docs/providers for full provider list.
+    """
+
+    def __init__(
+        self,
+        model: str = "gpt-4o-mini",
+        api_key: str | None = None,
+        api_base: str | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        **litellm_kwargs: Any,
+    ):
+        try:
+            import litellm  # noqa: PLC0415
+        except ImportError as exc:  # pragma: no cover
+            raise ConfigurationError(
+                "LiteLLMModel requires: pip install litellm"
+            ) from exc
+
+        # LiteLLM reads API keys from environment or you can pass them
+        self._litellm = litellm
+        self.model = model
+        self.api_key = api_key
+        self.api_base = api_base
+        self.temperature = temperature
+        self.max_tokens = max_tokens
+        self.litellm_kwargs = litellm_kwargs
+
+    @staticmethod
+    def _convert(messages: Sequence[Message]) -> list[dict[str, Any]]:
+        """Convert neutral Messages to LiteLLM format (OpenAI-compatible)."""
+        out: list[dict[str, Any]] = []
+        for m in messages:
+            if m.role in ("system", "user"):
+                out.append({"role": m.role, "content": m.content})
+            elif m.role == "assistant":
+                d: dict[str, Any] = {"role": "assistant", "content": m.content or None}
+                if m.tool_calls:
+                    d["tool_calls"] = [
+                        {
+                            "id": c.id,
+                            "type": "function",
+                            "function": {"name": c.name, "arguments": json.dumps(c.args)},
+                        }
+                        for c in m.tool_calls
+                    ]
+                out.append(d)
+            elif m.role == "tool":
+                out.append(
+                    {"role": "tool", "tool_call_id": m.tool_call_id, "content": m.content}
+                )
+        return out
+
+    def invoke(
+        self,
+        messages: Sequence[Message],
+        tools: list[dict[str, Any]] | None = None,
+        **kwargs: Any,
+    ) -> ModelResponse:
+        payload: dict[str, Any] = {
+            "model": self.model,
+            "messages": self._convert(messages),
+        }
+
+        if self.api_key:
+            payload["api_key"] = self.api_key
+        if self.api_base:
+            payload["api_base"] = self.api_base
+        if self.temperature is not None:
+            payload["temperature"] = self.temperature
+        if self.max_tokens is not None:
+            payload["max_tokens"] = self.max_tokens
+
+        if tools:
+            payload["tools"] = [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": t["name"],
+                        "description": t["description"],
+                        "parameters": t["parameters"],
+                    },
+                }
+                for t in tools
+            ]
+
+        # Merge any additional kwargs
+        payload.update(self.litellm_kwargs)
+        payload.update(kwargs)
+
+        resp = self._with_retries(lambda: self._litellm.completion(**payload))
+        choice = resp.choices[0]
+
+        # Parse tool calls
+        calls: list[ToolCall] = []
+        for tc in getattr(choice.message, "tool_calls", None) or []:
+            try:
+                args = json.loads(tc.function.arguments or "{}")
+            except json.JSONDecodeError:
+                args = {"__raw_arguments__": tc.function.arguments}
+            calls.append(ToolCall(name=tc.function.name, args=args, id=tc.id))
+
+        usage = getattr(resp, "usage", None)
+        return ModelResponse(
+            message=Message.assistant(getattr(choice.message, "content", None) or "", tool_calls=calls),
+            usage=Usage(
+                input_tokens=getattr(usage, "prompt_tokens", 0) if usage else 0,
+                output_tokens=getattr(usage, "completion_tokens", 0) if usage else 0,
+                model_calls=1,
+            ),
+            finish_reason=choice.finish_reason,
+            raw=resp,
+        )
+
+
+# ---------------------------------------------------------------------------
 # Fake model — the most useful class in this file
 # ---------------------------------------------------------------------------
 class FakeModel(BaseChatModel):

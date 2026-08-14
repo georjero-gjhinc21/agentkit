@@ -104,6 +104,7 @@ pip install -e .
 # Optional provider SDKs — imported lazily, only when you use them:
 pip install anthropic     # AnthropicModel
 pip install openai        # OpenAIModel (also any OpenAI-compatible server)
+pip install litellm       # LiteLLMModel (100+ providers: OpenAI, Anthropic, Azure, Bedrock, Ollama, etc.)
 ```
 
 Nothing is required to run the tests or the first four examples:
@@ -207,7 +208,7 @@ app = g.compile(middleware=[
 | RAG | `rag.py` | Recursive splitter, embeddings interface, vector store w/ metadata filtering, citation formatting |
 | Conversational memory | `runnables.py` | Session-keyed history wrapper for chains |
 | Tool calling from plain functions | `tools.py` | JSON Schema inferred from type hints + docstring |
-| Provider adapters | `models.py` | Anthropic, OpenAI (+ any compatible server), `FakeModel` for tests |
+| Provider adapters | `models.py` | Anthropic, OpenAI, LiteLLM (100+ providers), `FakeModel` for tests |
 | Graph engine | `graph.py` | Supersteps, conditional edges, parallel fan-out, per-node retries |
 | Durable state | `memory.py` | In-memory and atomic file checkpointers; implement 3 methods for your own |
 | Long-term memory | `memory.py` | Namespaced store; swap the search for embeddings |
@@ -238,6 +239,7 @@ Run in order; each one introduces exactly one new idea.
 | `05_production_agent.py` | Real provider + checkpoints + budget + redaction + guardrails. Needs an API key. |
 | `06_rag_chatbot.py` | Templates, LCEL, batch, routing, RAG, session memory, structured output. Offline. |
 | `07_fde_loop.py` | Audit an AP workflow, build evals, run shadow mode, measure impact, gate the rollout. Offline. |
+| `08_litellm_multi_provider.py` | Use LiteLLM to access 100+ providers (OpenAI, Anthropic, Bedrock, Ollama, etc.). Offline demo. |
 
 ---
 

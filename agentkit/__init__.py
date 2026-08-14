@@ -94,7 +94,7 @@ from .middleware import (
     RedactionMiddleware,
     UsageTrackingMiddleware,
 )
-from .models import AnthropicModel, BaseChatModel, FakeModel, OpenAIModel
+from .models import AnthropicModel, BaseChatModel, FakeModel, LiteLLMModel, OpenAIModel
 from .parsers import (
     BaseOutputParser,
     BooleanOutputParser,
