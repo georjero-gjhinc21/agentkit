@@ -95,6 +95,305 @@ afternoon and modify without fear.
 
 ---
 
+## Architecture
+
+### System Layers
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  APPLICATIONS                                               │
+│  prebuilt/       create_agent, create_supervisor, ReAct     │
+├─────────────────────────────────────────────────────────────┤
+│  ORCHESTRATION                                              │
+│  graph.py        StateGraph, supersteps, checkpoints        │
+│  runnables.py    Chains, | composition, batch, streaming    │
+├─────────────────────────────────────────────────────────────┤
+│  COMPONENTS                                                 │
+│  prompts.py  parsers.py  rag.py  tools.py  memory.py        │
+│  workflow.py  evals.py  deployment.py  bitwarden.py         │
+├─────────────────────────────────────────────────────────────┤
+│  PROVIDERS (vendor boundary)                                │
+│  models.py       AnthropicModel, OpenAIModel, LiteLLMModel  │
+├─────────────────────────────────────────────────────────────┤
+│  FOUNDATION                                                 │
+│  types.py        Message, ToolCall, Usage, ModelResponse    │
+│  errors.py       Exception hierarchy                        │
+└─────────────────────────────────────────────────────────────┘
+     middleware.py / tracing.py cut across all layers
+```
+
+**Key principles:**
+- Dependencies point **downward only** - no cycles
+- Vendor abstraction at **one layer** - models.py is the boundary
+- Everything above models.py is **provider-agnostic**
+- Each layer **independently testable**
+
+### Core Design Decisions
+
+#### 1. Neutral Message Format
+
+One internal `Message` type, adapters translate at the edge:
+
+```python
+# Internal (vendor-neutral)
+Message.user("What's the weather?")
+Message.assistant("Let me check", tool_calls=[...])
+Message.tool("Weather data", tool_call_id="...")
+
+# Adapters handle provider quirks:
+# - Anthropic: system in top-level param, tool_use blocks
+# - OpenAI: system in messages array, tool_calls with JSON strings
+# - LiteLLM: OpenAI-compatible format for 100+ providers
+```
+
+**Benefit:** Swap providers in one line. Same agent, different model.
+
+#### 2. State with Declared Reducers
+
+Nodes return **partial updates**. State keys declare **how updates merge**:
+
+```python
+schema = StateSchema({
+    "messages": Channel(add_messages, list),   # append (upsert by id)
+    "findings": Channel(append, list),         # concatenate
+    "quality":  Channel(),                     # overwrite (default)
+    "steps":    Channel(add_int, 0),           # accumulate
+})
+```
+
+**Why:** Enables deterministic parallel execution. Two branches both write `messages` → reducer defines the merge, not last-writer-wins.
+
+#### 3. Control Flow as Data (Graphs)
+
+```python
+graph = StateGraph(schema)
+graph.add_node("model", call_model)
+graph.add_node("tools", run_tools)
+graph.add_conditional_edges("model", should_continue, {
+    "tools": "tools",
+    "done": END
+})
+app = graph.compile(checkpointer=FileCheckpointer())
+```
+
+**Execution model:** Bulk-synchronous (Pregel)
+- Supersteps run all nodes at current frontier
+- Nodes read same state snapshot
+- Updates merged, then next frontier computed
+- Parallel branches are **deterministic**
+
+**Benefits:**
+- Pausable/resumable (state is data)
+- Human-in-the-loop (interrupt before node)
+- Observable (every step recorded)
+- Testable (FakeModel + scripted responses)
+
+#### 4. Composition via Runnables
+
+Everything implements `invoke | stream | batch | ainvoke`:
+
+```python
+chain = (
+    {"context": retriever, "question": RunnablePassthrough()}
+    | prompt
+    | model
+    | parser
+)
+
+# Streaming/batching/async work at any nesting depth
+for chunk in chain.stream(input):
+    print(chunk)
+```
+
+**Benefit:** Add stages anywhere without re-implementing the four methods.
+
+#### 5. Cross-Cutting Concerns as Middleware
+
+Logging, budgets, guardrails attach **from outside**:
+
+```python
+app = graph.compile(middleware=[
+    ConsoleTracer(),                           # Observability
+    BudgetMiddleware(max_tokens=100_000),      # Cost controls
+    RedactionMiddleware(),                     # PII protection
+    GuardrailMiddleware([...]),                # Safety checks
+    AuditMiddleware(trail),                    # Compliance
+])
+```
+
+**Benefit:** Cross-cutting logic doesn't pollute node code.
+
+### Data Flow
+
+```
+User Input
+    ↓
+[Middleware: before_run]
+    ↓
+Graph Execution (supersteps)
+  ├─ Read state snapshot
+  ├─ Execute frontier nodes (parallel)
+  ├─ [Middleware: before_node / after_node]
+  ├─ Merge updates via reducers
+  ├─ Compute next frontier
+  └─ Repeat until END
+    ↓
+[Middleware: after_run]
+    ↓
+Final State (with full message history)
+```
+
+### Provider Integration
+
+#### Model Abstraction
+
+```python
+class BaseChatModel:
+    def invoke(self, messages, tools=None, **kw) -> ModelResponse:
+        """Neutral in, neutral out. Provider details hidden."""
+```
+
+**Implementations:**
+- `AnthropicModel` - Claude API
+- `OpenAIModel` - OpenAI / vLLM / Ollama / any compatible
+- `LiteLLMModel` - 100+ providers via LiteLLM
+- `FakeModel` - Scripted responses for tests
+
+**Adding a provider:** Implement one method. That's it.
+
+#### Credential Management
+
+```python
+# Option 1: Environment variables
+model = AnthropicModel()  # Reads ANTHROPIC_API_KEY
+
+# Option 2: Bitwarden vault (secure)
+from agentkit import get_secret
+model = AnthropicModel(api_key=get_secret("ANTHROPIC_API_KEY"))
+
+# Option 3: Direct (not recommended)
+model = AnthropicModel(api_key="sk-...")
+```
+
+**Bitwarden integration:** Encrypted vault, cross-device sync, team sharing, audit logs.
+
+### Testing Architecture
+
+```python
+# Agent code is testable because interesting logic
+# is separate from non-deterministic network calls
+
+model = FakeModel(responses=[
+    Message.assistant("", tool_calls=[...]),
+    Message.assistant("Final answer"),
+])
+
+agent = create_agent(model=model, tools=[...])
+result = agent.invoke({"messages": [...]})
+
+# Assert on behavior, inspect model.calls
+assert result["messages"][-1].content == "Final answer"
+assert len(model.calls) == 2
+```
+
+**Every routing decision, retry path, and termination condition becomes a unit test.**
+
+### Deployment Architecture
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  DEVELOPMENT                                            │
+│  • FakeModel for offline testing                        │
+│  • 98 passing tests                                     │
+│  • Local Ollama for free iteration                      │
+└─────────────────────────────────────────────────────────┘
+                     ↓
+┌─────────────────────────────────────────────────────────┐
+│  EVALUATION                                             │
+│  • Golden datasets from production history              │
+│  • Scorers: exact_match, contains, LLM judge            │
+│  • Regression detection                                 │
+│  • Critical case tracking                               │
+└─────────────────────────────────────────────────────────┘
+                     ↓
+┌─────────────────────────────────────────────────────────┐
+│  STAGED ROLLOUT                                         │
+│  1. SHADOW      → Agent runs, changes nothing           │
+│  2. SUGGEST     → Output shown as suggestion            │
+│  3. APPROVE     → Every action needs approval           │
+│  4. AUTO+EXCEPT → High confidence auto, rest escalate   │
+│  5. AUTONOMOUS  → Fully autonomous (audited)            │
+└─────────────────────────────────────────────────────────┘
+                     ↓
+┌─────────────────────────────────────────────────────────┐
+│  PRODUCTION                                             │
+│  • FileCheckpointer or DB for durability                │
+│  • BudgetMiddleware for cost controls                   │
+│  • GuardrailMiddleware for safety                       │
+│  • AuditTrail for compliance                            │
+│  • Impact metrics (cost/risk/revenue)                   │
+└─────────────────────────────────────────────────────────┘
+```
+
+See [`docs/FDE_PLAYBOOK.md`](docs/FDE_PLAYBOOK.md) for the complete deployment methodology.
+
+### Security Architecture
+
+```
+API Keys & Credentials
+         ↓
+    [Bitwarden Vault]
+    (AES-256 encrypted)
+         ↓
+    BitwardenSecrets
+         ↓
+    Model Constructors
+         ↓
+    Agents & Chains
+         ↓
+    [Middleware Layer]
+    ├─ RedactionMiddleware (strip PII)
+    ├─ GuardrailMiddleware (safety checks)
+    └─ AuditMiddleware (compliance logs)
+         ↓
+    Provider APIs
+```
+
+**Security features:**
+- ✅ Encrypted credential storage (Bitwarden)
+- ✅ PII redaction middleware
+- ✅ Guardrails with "annotate" mode
+- ✅ Audit trails (append-only JSONL)
+- ✅ Budget limits (token/cost caps)
+- ✅ No secrets in git (never .env files)
+
+### Extension Points
+
+```python
+# New provider: Implement one method
+class MyModel(BaseChatModel):
+    def invoke(self, messages, tools=None, **kw) -> ModelResponse:
+        ...
+
+# New checkpointer: Implement three methods  
+class PostgresCheckpointer(BaseCheckpointer):
+    def get(self, thread_id): ...
+    def put(self, thread_id, checkpoint): ...
+    def delete(self, thread_id): ...
+
+# New middleware: All hooks optional
+class MyMiddleware(Middleware):
+    def before_node(self, node, state, config): ...
+    def after_node(self, node, state, update, config): ...
+
+# New architecture: Copy a prebuilt, edit the graph
+# (Don't add flags - fork the pattern)
+```
+
+For detailed architecture rationale, see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+
+---
+
 ## Install
 
 ```bash
