@@ -105,6 +105,9 @@ pip install -e .
 pip install anthropic     # AnthropicModel
 pip install openai        # OpenAIModel (also any OpenAI-compatible server)
 pip install litellm       # LiteLLMModel (100+ providers: OpenAI, Anthropic, Azure, Bedrock, Ollama, etc.)
+
+# Optional: Bitwarden CLI for secure credential management
+npm install -g @bitwarden/cli  # Store API keys in encrypted Bitwarden vault
 ```
 
 Nothing is required to run the tests or the first four examples:
@@ -240,6 +243,7 @@ Run in order; each one introduces exactly one new idea.
 | `06_rag_chatbot.py` | Templates, LCEL, batch, routing, RAG, session memory, structured output. Offline. |
 | `07_fde_loop.py` | Audit an AP workflow, build evals, run shadow mode, measure impact, gate the rollout. Offline. |
 | `08_litellm_multi_provider.py` | Use LiteLLM to access 100+ providers (OpenAI, Anthropic, Bedrock, Ollama, etc.). Offline demo. |
+| `09_bitwarden_secrets.py` | Secure credential management with Bitwarden vault (encrypted API key storage). Needs bw CLI. |
 
 ---
 

@@ -94,6 +94,7 @@ from .middleware import (
     RedactionMiddleware,
     UsageTrackingMiddleware,
 )
+from .bitwarden import BitwardenSecrets, get_secret
 from .models import AnthropicModel, BaseChatModel, FakeModel, LiteLLMModel, OpenAIModel
 from .parsers import (
     BaseOutputParser,
